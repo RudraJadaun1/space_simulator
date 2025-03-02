@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Black Hole Spacetime Simulation</title>
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+      background-color: #000;
+    }
+    #overlay {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      color: #fff;
+      font-family: Arial, sans-serif;
+      background: rgba(0, 0, 0, 0.5);
+      padding: 10px;
+      border-radius: 5px;
+      z-index: 100;
+    }
+  </style>
+</head>
+<body>
+  <div id="overlay">
+    <div>Mass: <span id="massVal">0.50</span></div>
+    <div>Spin: <span id="spinVal">0.50</span></div>
+    <div>Distance: <span id="distVal">5.00</span></div>
+  </div>
+
+  <!-- Three.js and dat.GUI from CDNs -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/dat-gui/0.7.7/dat.gui.min.js"></script>
+
+  <script>
+    // Simulation parameters
+    const params = {
+      mass: 0.5,
+      spin: 0.5,
+      distance: 5
+    };
+
+    // Set up scene, camera, and renderer
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.z = params.distance;
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.body.appendChild(renderer.domElement);
+
+    // Orbit Controls for interactive zoom and rotation
+    const controls = new THREE.OrbitControls(camera, renderer.domElement);
+
+    // Create a starfield background
+    const starGeometry = new THREE.BufferGeometry();
+    const starCount = 10000;
+    const starVertices = [];
+    for (let i = 0; i < starCount; i++) {
+      const x = THREE.MathUtils.randFloatSpread(1000);
+      const y = THREE.MathUtils.randFloatSpread(1000);
+      const z = THREE.MathUtils.randFloatSpread(1000);
+      starVertices.push(x, y, z);
+    }
+    starGeometry.setAttribute('position', new THREE.Float32BufferAttribute(starVertices, 3));
+    const starMaterial = new THREE.PointsMaterial({ color: 0xffffff });
+    const starField = new THREE.Points(starGeometry, starMaterial);
+    scene.add(starField);
+
+    // Black hole placeholder (a dark sphere at the center)
+    const bhGeometry = new THREE.SphereGeometry(1, 32, 32);
+    const bhMaterial = new THREE.MeshBasicMaterial({ color: 0x000000 });
+    const blackHole = new THREE.Mesh(bhGeometry, bhMaterial);
+    scene.add(blackHole);
+
+    // --- Post-processing: Lensing Shader Pass ---
+    // Render scene to a render target first
+    const renderTarget = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight);
+
+    // Custom shader to mimic gravitational lensing
+    const lensingShader = {
+      uniforms: {
+        tDiffuse: { value: null },
+        resolution: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) },
+        mass: { value: params.mass },
+        spin: { value: params.spin },
+        // The black hole is centered on screen (normalized coordinates)
+        blackHolePos: { value: new THREE.Vector2(0.5, 0.5) }
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = vec4( position, 1.0 );
+        }
+      `,
+      fragmentShader: `
+        uniform sampler2D tDiffuse;
+        uniform vec2 resolution;
+        uniform float mass;
+        uniform float spin;
+        uniform vec2 blackHolePos;
+        varying vec2 vUv;
+        void main() {
+          vec2 uv = vUv;
+          vec2 offset = uv - blackHolePos;
+          float r = length(offset);
+          // Basic lensing effect: stronger distortion as you approach the black hole
+          float lensing = mass / (r + 0.001);
+          // Incorporate spin by a small rotation proportional to the lensing
+          float angle = spin * lensing;
+          float cosA = cos(angle);
+          float sinA = sin(angle);
+          vec2 rotatedOffset = vec2(
+            offset.x * cosA - offset.y * sinA,
+            offset.x * sinA + offset.y * cosA
+          );
+          // Warp the UVs based on the lensing factor
+          vec2 newUV = blackHolePos + rotatedOffset * (1.0 + lensing);
+          vec4 color = texture2D(tDiffuse, newUV);
+          gl_FragColor = color;
+        }
+      `
+    };
+
+    // Full-screen quad for the post-processing pass
+    const quadGeometry = new THREE.PlaneBufferGeometry(2, 2);
+    const quadMaterial = new THREE.ShaderMaterial({
+      uniforms: THREE.UniformsUtils.clone(lensingShader.uniforms),
+      vertexShader: lensingShader.vertexShader,
+      fragmentShader: lensingShader.fragmentShader
+    });
+    const quad = new THREE.Mesh(quadGeometry, quadMaterial);
+    const postScene = new THREE.Scene();
+    postScene.add(quad);
+    const postCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+
+    // --- dat.GUI Controls ---
+    const gui = new dat.GUI();
+    gui.add(params, 'mass', 0, 2).step(0.01).onChange(function(value) {
+      quadMaterial.uniforms.mass.value = value;
+      document.getElementById("massVal").textContent = value.toFixed(2);
+    });
+    gui.add(params, 'spin', 0, 2).step(0.01).onChange(function(value) {
+      quadMaterial.uniforms.spin.value = value;
+      document.getElementById("spinVal").textContent = value.toFixed(2);
+    });
+    gui.add(params, 'distance', 1, 20).step(0.1).onChange(function(value) {
+      camera.position.z = value;
+      document.getElementById("distVal").textContent = value.toFixed(2);
+    });
+
+    // Handle window resize
+    window.addEventListener('resize', function() {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      quadMaterial.uniforms.resolution.value.set(window.innerWidth, window.innerHeight);
+      renderTarget.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // --- Render Loop ---
+    function animate() {
+      requestAnimationFrame(animate);
+
+      controls.update();
+
+      // Render the 3D scene into the render target
+      renderer.setRenderTarget(renderTarget);
+      renderer.render(scene, camera);
+      renderer.setRenderTarget(null);
+
+      // Pass the rendered texture to the shader
+      quadMaterial.uniforms.tDiffuse.value = renderTarget.texture;
+
+      // Render the post-processed (lensed) scene to the screen
+      renderer.render(postScene, postCamera);
+    }
+    animate();
+  </script>
+</body>
+</html>
